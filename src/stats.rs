@@ -1,10 +1,10 @@
-use chrono::{DateTime, Datelike, Local, NaiveDate, Timelike};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, Timelike};
 use num_traits::cast::FromPrimitive;
 use std::collections::HashMap;
 
 use crate::{
     parser::Command,
-    view::{View, STR_WEEKDAY},
+    view::{Component, View, STR_WEEKDAY},
 };
 
 #[derive(Default)]
@@ -12,14 +12,18 @@ pub struct Statistic {
     year: i32,
 
     list_daytime: Vec<usize>,
+    list_daytime_today: Vec<usize>,
     list_weekday: Vec<usize>,
     list_day: Vec<usize>,
     list_month: Vec<usize>,
     list_month_total: Vec<usize>,
 
-    map_command: HashMap<String, usize>,
     map_command_total: HashMap<String, usize>,
+    map_command_daily: HashMap<String, usize>,
+    map_command_monthly: Vec<HashMap<String, usize>>,
+    map_command_annual: HashMap<String, usize>,
 
+    today_command_count: usize,
     command_count: usize,
     command_count_total: usize,
 
@@ -33,10 +37,12 @@ impl Statistic {
             year,
             first_command_time: Local::now(),
             list_daytime: vec![0; 24],
+            list_daytime_today: vec![0; 24],
             list_weekday: vec![0; 7],
             list_month: vec![0; 12],
             list_month_total: vec![0; 12],
-            list_day: vec![0; 365],
+            list_day: vec![0; 366],
+            map_command_monthly: vec![HashMap::new(); 12],
             ..Default::default()
         }
     }
@@ -49,10 +55,13 @@ impl Statistic {
         self.command_count_total += 1;
 
         if let Some(time) = c.time {
+            let now = Local::now();
             let month = time.month0() as usize;
             self.list_month_total[month] += 1;
 
-            if time.year() != self.year {
+            if (self.year != 0 && time.year() != self.year)
+                || (self.year == 0 && time.year() != now.year())
+            {
                 return;
             }
 
@@ -67,14 +76,28 @@ impl Statistic {
             self.command_count += 1;
 
             if self.first_command_time > time {
-                self.first_command = c.command_raw.clone();
+                self.first_command.clone_from(&c.command_raw);
                 self.first_command_time = time;
             }
 
-            self.map_command
+            self.map_command_annual
                 .entry(c.command.clone())
                 .and_modify(|counter| *counter += 1)
                 .or_insert(1);
+            self.map_command_monthly[month]
+                .entry(c.command.clone())
+                .and_modify(|counter| *counter += 1)
+                .or_insert(1);
+
+            let delta = if now.hour() < 6 { 18 } else { -6 };
+            if self.year == 0 && (time + Duration::hours(delta)).ordinal0() == now.ordinal0() {
+                self.today_command_count += 1;
+                self.list_daytime_today[hour] += 1;
+                self.map_command_daily
+                    .entry(c.command.clone())
+                    .and_modify(|counter| *counter += 1)
+                    .or_insert(1);
+            }
         }
     }
 
@@ -125,7 +148,7 @@ impl Statistic {
             .unwrap_or_default()
     }
 
-    pub fn output(&self) {
+    pub fn output_annual(&self) {
         // Cover
         View::display_cover(self.year);
 
@@ -218,7 +241,7 @@ impl Statistic {
 
         View::sub_title("Favorite Commands");
 
-        let mut fav_command: Vec<_> = self.map_command.iter().collect();
+        let mut fav_command: Vec<_> = self.map_command_annual.iter().collect();
         fav_command.sort_by(|a, b| b.1.cmp(a.1));
         for (command, &count) in fav_command.iter().take(10) {
             View::display_count_and_total(
@@ -242,5 +265,75 @@ impl Statistic {
 
         View::hint_finish(self.year);
         View::wait();
+    }
+
+    pub fn output_recent(&self) {
+        let mut component = Component::new(61, 6, View::display);
+        component.edge();
+        component.break_line();
+
+        component.content(&format!(
+            "Today - {} commands / {} unique commands",
+            self.today_command_count,
+            self.map_command_daily.len()
+        ));
+        component.break_line();
+
+        component.daytime_graph(&self.list_daytime_today);
+        component.break_line();
+
+        let mut fav_commands: Vec<_> = self.map_command_daily.iter().collect();
+        fav_commands.sort_by(|a, b| b.1.cmp(a.1));
+        let top_fav_commands: Vec<_> = fav_commands.iter().take(5).collect();
+
+        let max = top_fav_commands
+            .first()
+            .map(|(_, b)| **b)
+            .unwrap_or_default();
+        let len_max = top_fav_commands
+            .iter()
+            .map(|(key, _)| key.len())
+            .max()
+            .unwrap_or_default();
+        for (command, &count) in top_fav_commands {
+            component.command_rank(command, count, max, len_max);
+        }
+
+        component.break_line();
+        component.edge();
+        component.padding(4);
+        component.break_line();
+
+        component.content(&format!(
+            "This year - {} commands / {} unique commands",
+            self.command_count,
+            self.map_command_annual.len()
+        ));
+        component.break_line();
+
+        component.graph2(&self.list_day);
+        component.break_line();
+
+        let month = Local::now().month0() as isize;
+        for m in (month - 1..=month).rev() {
+            if m < 0 {
+                continue;
+            }
+            let mut monthly_commands: Vec<_> =
+                self.map_command_monthly[m as usize].iter().collect();
+            monthly_commands.sort_by(|a, b| b.1.cmp(a.1));
+            let fav_commands: Vec<_> = monthly_commands.iter().take(3).cloned().collect();
+            component.monthly_stat(
+                m,
+                self.list_month[m as usize],
+                self.map_command_monthly[m as usize].len(),
+                fav_commands,
+                m != month,
+            );
+        }
+
+        component.break_line();
+        component.edge();
+        println!()
     }
 }

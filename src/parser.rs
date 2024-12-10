@@ -24,11 +24,11 @@ pub struct Command {
 
 impl Command {
     fn from(commandline: String, time: Option<DateTime<Local>>) -> Self {
-        return Command {
+        Command {
             command_raw: commandline.trim().into(),
             time,
             ..Default::default()
-        };
+        }
     }
 
     fn parse_line(mut self) -> Result<Self, Box<dyn Error>> {
@@ -42,9 +42,9 @@ impl Command {
         let args: Vec<_> = command.split_whitespace().map(String::from).collect();
         let c = args
             .iter()
-            .find(|s| !s.is_empty() || !s.contains('=') && !s.contains('{'))
+            .find(|s| !s.is_empty() && !s.contains('=') && !s.contains('{'))
             .ok_or("invalid command")?;
-        self.command = c.to_owned();
+        c.clone_into(&mut self.command);
         self.arguments = args;
         Ok(self)
     }
